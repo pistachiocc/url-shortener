@@ -1,6 +1,5 @@
 import secrets
 import string
-from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
@@ -9,23 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, get_db
+from .database import get_db
 from .models import URL
 
 ALPHABET = string.ascii_letters + string.digits
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    yield
-
-
-app = FastAPI(
-    title="URL Shortener",
-    lifespan=lifespan
-)
-
+app = FastAPI(title="URL Shortener")
 
 class URLRequest(BaseModel):
     long_url: AnyHttpUrl

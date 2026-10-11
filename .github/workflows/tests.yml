@@ -36,6 +36,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
+    
+      - name: Apply database migrations
+        env:
+          DATABASE_URL: postgresql+psycopg://shortener:dev_password@localhost:5433/shortener_test
+        run: alembic upgrade head
 
       - name: Run tests
         env:
