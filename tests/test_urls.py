@@ -3,7 +3,7 @@ import re
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.database import SessionLocal
+from sqlalchemy.orm import Session
 from app.models import URL
 
 
@@ -47,8 +47,11 @@ def test_not_found(client):
     assert response.status_code == 404
 
 
-def test_duplicate_short_code(client):
-    with SessionLocal() as session:
+def test_duplicate_short_code(client, db_connection):
+    with Session(
+        bind=db_connection,
+        join_transaction_mode="create_savepoint",
+    ) as session:
         session.add(
             URL(
                 short_code="abc12345",

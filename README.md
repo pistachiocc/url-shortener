@@ -1,49 +1,96 @@
 # URL Shortener
 
-A lightweight URL shortening service built with Python and FastAPI.
+A URL shortening service built with FastAPI and PostgreSQL.
 
-The project explores backend engineering concepts such as URL encoding, persistent storage, caching, API design, and horizontal scalability.
+The project explores backend engineering concepts including RESTful API design, database persistence, transaction management, and scalability.
 
 ## Features
 
 ### Implemented
 
-- Generate short URLs from long URLs
-- Redirect short URLs to their original destinations (HTTP 302)
 - Generate random 8-character Base62 short codes
+- Create short URLs through a REST API
+- Redirect short URLs to their original destinations (HTTP 302)
 - Validate input URLs
+- Persist URL mappings in PostgreSQL
+- Enforce short-code uniqueness with database constraints
+- Retry short-code generation on uniqueness conflicts
+- Integration tests with transaction-based isolation
 
 ### Planned
 
-- PostgreSQL for persistent storage
 - Redis caching
 - URL expiration
 - Rate limiting
-- Automated tests and CI
-- Containerized deployment
+- Database migrations with Alembic
+- GitHub Actions CI
+- Containerized API deployment
 - Load testing and performance analysis
 
 ## Tech Stack
 
-- Python
-- FastAPI
-- Uvicorn
+- Language: Python
+- Web Framework: FastAPI
+- Database: PostgreSQL
+- ORM: SQLAlchemy
+- Database Driver: Psycopg
+- Testing: pytest, FastAPI TestClient
+- Development Environment: Docker Compose
 
-PostgreSQL, Redis, and Docker will be introduced in later development stages.
+## Architecture
+
+Current architecture:
+
+```text
+Client
+   |
+   v
+FastAPI
+   |
+   v
+SQLAlchemy
+   |
+   v
+PostgreSQL
+```
+
+FastAPI runs locally, while PostgreSQL runs in a Docker container.
 
 ## Getting Started
 
-1. Clone the repository and enter the project directory.
+### Prerequisites
 
-2. Create a virtual environment and install dependencies.
+- Python 3.9+
+- Docker with Docker Compose
+
+### Installation
+
+1. Create and activate a virtual environment.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install "fastapi[standard]"
 ```
 
-3. Start the development server.
+2. Install dependencies.
+
+```bash
+pip install -r requirements.txt
+```
+
+3. Configure the database connection.
+
+```bash
+cp .env.example .env
+```
+
+4. Start PostgreSQL.
+
+```bash
+docker compose up -d
+```
+
+5. Start the API server.
 
 ```bash
 fastapi dev app/main.py
@@ -52,6 +99,8 @@ fastapi dev app/main.py
 The API is available at http://localhost:8000.
 
 Interactive API documentation: http://localhost:8000/docs
+
+The application automatically creates the database tables if they do not exist.
 
 ## API Endpoints
 
@@ -70,7 +119,7 @@ Request:
 Example response (201 Created):
 
 ```json
-{"code": "aB3xY9q", "short_url": "http://localhost:8000/aB3xY9q"}
+{"code": "aB3xY9qK", "short_url": "http://localhost:8000/aB3xY9qK"}
 ```
 
 ### Redirect to Original URL
@@ -79,44 +128,81 @@ Example response (201 Created):
 GET /{code}
 ```
 
-Returns HTTP 302 with a Location header pointing to the original URL.
+- 302 Found: Redirects to the original URL
+- 404 Not Found: The short code does not exist
 
-Returns HTTP 404 if the short code does not exist.
+## Database Design
 
-## Current Limitations
+The `urls` table contains:
 
-This initial version uses an in-memory Python dictionary for URL storage.
+| Column       | Type         | Constraints      |
+| ------------ | ------------ | ---------------- |
+| id           | BIGINT       | Primary Key      |
+| short_code   | VARCHAR(8)   | Unique, Not Null |
+| original_url | TEXT         | Not Null         |
+| created_at   | TIMESTAMPTZ  | Not Null         |
 
-- Data is lost when the server restarts.
-- URL mappings are not shared across multiple server processes.
-- Short-code uniqueness is only guaranteed within the current in-memory store.
+A unique B-tree index on `short_code` supports efficient lookups and prevents duplicate short codes.
 
-These limitations will be addressed in future iterations.
+## Testing
 
-## Architecture
+Create a separate test database:
 
-Current implementation:
-
-```text
-Client → FastAPI → In-memory Storage
+```bash
+docker compose exec db psql -U shortener -d postgres -c "CREATE DATABASE shortener_test;"
 ```
 
-Future iterations will introduce PostgreSQL and Redis.
+Run the test suite:
 
-## Development Roadmap
+```bash
+python -m pytest -v
+```
 
-- Basic URL shortening API
-- HTTP redirection
-- PostgreSQL integration
-- Redis caching
-- Rate limiting
-- Automated testing
-- Docker deployment
-- Performance benchmarking
+Current tests cover:
+
+- Successful short URL creation
+- HTTP 302 redirection
+- HTTP 404 for unknown short codes
+- Database uniqueness constraint
+
+### Test Isolation
+
+Each test runs within an outer database transaction.
+
+SQLAlchemy sessions use savepoints so that application-level commits do not commit the outer test transaction.
+
+After each test, the outer transaction is rolled back to prevent test data from affecting subsequent tests.
 
 ## Design Decisions
 
-Detailed discussions of short-code generation, caching, database design, and scalability will be added as the project evolves.
+### Why PostgreSQL?
 
-Use a BIGINT surrogate primary key to provide a stable internal identifier and simplify future relationships, while enforcing uniqueness on the externally exposed short code.
- 
+PostgreSQL provides ACID transactions, unique constraints, and indexed lookups for reliable URL mapping storage.
+
+### Why Separate `id` and `short_code`?
+
+A BIGINT primary key provides a stable internal identifier for potential future relationships, while `short_code` serves as the public identifier.
+
+### Why Random Base62 Codes?
+
+Random Base62 codes are compact and do not directly expose sequential database IDs. Uniqueness is enforced by PostgreSQL, with retries on conflicts.
+
+## Current Limitations
+
+- No caching layer
+- No authentication or user management
+- No URL expiration
+- No distributed deployment
+- No production deployment configuration
+
+## Development Roadmap
+
+- [x] ~~Basic URL shortening~~
+- [x] ~~PostgreSQL persistence~~
+- [x] ~~Integration tests~~
+- [x] ~~Transaction-based test isolation~~
+- [ ] GitHub Actions CI
+- [ ] Alembic migrations
+- [ ] Redis caching
+- [ ] Rate limiting
+- [ ] Load testing
