@@ -152,6 +152,12 @@ Create a separate test database:
 docker compose exec db psql -U shortener -d postgres -c "CREATE DATABASE shortener_test;"
 ```
 
+Install dependencies：
+
+```bash
+pip install -r requirements-dev.txt
+````
+
 Run the test suite:
 
 ```bash
