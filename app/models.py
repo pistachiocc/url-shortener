@@ -38,3 +38,9 @@ class URL(Base):
         server_default=func.now(),
         nullable=False,
     )
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
