@@ -18,11 +18,11 @@ This project explores backend engineering concepts including RESTful API design,
 - Integration tests with transaction-based isolation
 - Database schema versioning with Alembic
 - Automated testing with GitHub Actions CI
+- URL expiration
 
 ### Planned
 
 - Redis caching
-- URL expiration
 - Rate limiting
 - Containerized API deployment
 - Load testing and performance analysis
@@ -34,6 +34,7 @@ This project explores backend engineering concepts including RESTful API design,
 - Database: PostgreSQL 17
 - ORM: SQLAlchemy 2
 - Database Driver: Psycopg 3
+- Database Migrations: Alembic
 - Testing: pytest, FastAPI TestClient
 - CI: GitHub Actions
 - Development Environment: Docker Compose
@@ -71,7 +72,7 @@ Database schema changes are managed through Alembic migrations.
 1. Clone the repository.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/url-shortener.git
+git clone https://github.com/pistachiocc/url-shortener.git
 cd url-shortener
 ```
 
@@ -127,14 +128,31 @@ POST /api/v1/urls
 Request:
 
 ```json
-{"long_url": "https://example.com/articles/12345"}
+{
+    "long_url": "https://example.com/articles/12345",
+    "expires_in_seconds": 3600
+}
 ```
+
+The expires_in_seconds parameter is optional.
+
+- If omitted, the short URL never expires.
+- Valid values range from 1 to 31,536,000 seconds (365 days).
+- Invalid values return HTTP 422.
 
 Example response (201 Created):
 
 ```json
-{"code": "aB3xY9qK", "short_url": "http://localhost:8000/aB3xY9qK"}
+{
+   "code": "aB3xY9qK",
+   "short_url": "http://localhost:8000/aB3xY9qK",
+   "expires_at": "2026-10-21T13:38:21.933586+00:00"
+}
 ```
+
+The `expires_at` field is an absolute expiration timestamp in UTC, or null for URLs without expiration.
+
+If a unique short code cannot be generated within 5 attempts, the API returns HTTP 503 Service Unavailable with `{"detail": "Could not generate unique short code"}`.
 
 ### Redirect to Original URL
 
@@ -142,8 +160,9 @@ Example response (201 Created):
 GET /{code}
 ```
 
-- 302 Found: Redirects to the original URL
-- 404 Not Found: The short code does not exist
+- 302 Found: Redirects to the original URL.
+- 404 Not Found: The short code does not exist.
+- 410 Gone: URL has expired.
 
 ## Database Design
 
@@ -155,14 +174,21 @@ The `urls` table contains:
 | short_code   | VARCHAR(8)   | Unique, Not Null |
 | original_url | TEXT         | Not Null         |
 | created_at   | TIMESTAMPTZ  | Not Null         |
+| expires_at   | TIMESTAMPTZ  | Nullable         |
 
 A unique B-tree index on `short_code` supports efficient lookups and prevents duplicate short codes.
 
 ### Database Migrations
 
-Database schema changes are managed with Alembic instead of automatically creating tables at application startup.
+Database schema changes are managed with Alembic.
 
-The initial migration creates the `urls` table, including its primary key, unique constraint, and default values.
+Migration history:
+
+- Initial migration: Create the `urls` table.
+- URL expiration migration: Add the nullable `expires_at` column.
+
+Existing URL records remain valid after the migration,
+with `expires_at` set to NULL.
 
 Apply all pending migrations:
 
@@ -220,10 +246,14 @@ python -m pytest -v
 
 Current tests cover:
 
-- Successful short URL creation
+- Successful short URL creation (201)
 - HTTP 302 redirection
 - HTTP 404 for unknown short codes
 - Database uniqueness constraint
+- Redirecting URLs before expiration
+- HTTP 410 for expired URLs
+- Invalid expiration values (422)
+- Backward compatibility for URLs without expiration
 
 ### Test Isolation
 
@@ -272,22 +302,35 @@ Database transactions and savepoints allow tests to execute real database operat
 
 This improves test repeatability and reduces the risk of test data interfering with other tests.
 
+### Why Store an Absolute Expiration Timestamp?
+
+The API accepts a relative TTL (`expires_in_seconds`),
+while PostgreSQL stores an absolute UTC timestamp (`expires_at`).
+
+This allows expiration to be checked directly at request time
+without recalculating the TTL from the creation timestamp.
+
+Expired URLs return HTTP 410 without being immediately
+deleted from the database.
+
 ## Current Limitations
 
 - No caching layer
 - No authentication or user management
-- No URL expiration
+- No automatic cleanup of expired URLs
+- The returned `short_url` uses a hardcoded base URL (`http://localhost:8000`)
 - No distributed deployment
 - No production deployment configuration
 
 ## Development Roadmap
 
-- [x] ~~Basic URL shortening~~
-- [x] ~~PostgreSQL persistence~~
-- [x] ~~Integration tests~~
-- [x] ~~Transaction-based test isolation~~
-- [x] ~~GitHub Actions CI~~
-- [x] ~~Initial Alembic migration~~
+- [x] Basic URL shortening
+- [x] PostgreSQL persistence
+- [x] Integration tests
+- [x] Transaction-based test isolation
+- [x] GitHub Actions CI
+- [x] Alembic database migrations
+- [x] URL expiration
 - [ ] Redis caching
 - [ ] Rate limiting
 - [ ] Load testing
