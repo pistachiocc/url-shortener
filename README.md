@@ -276,6 +276,13 @@ The CI workflow:
 
 This verifies that the application and database schema can be initialized and tested in a clean environment.
 
+## Performance Benchmarks
+
+Redirect performance is evaluated using Grafana k6.
+
+See [Benchmark Results](benchmarks/README.md) for the
+test methodology, baseline measurements, and observations.
+
 ## Design Decisions
 
 ### Why PostgreSQL?
