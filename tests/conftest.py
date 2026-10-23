@@ -4,6 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from sqlalchemy.engine import make_url
+import fakeredis
+
+from app.cache import get_cache
 
 DEFAULT_TEST_DATABASE_URL = (
     "postgresql+psycopg://shortener:dev_password"
@@ -40,7 +43,7 @@ def db_connection():
 
 
 @pytest.fixture
-def client(db_connection):
+def client(db_connection, cache):
     def override_get_db():
         with Session(
             bind=db_connection,
@@ -50,9 +53,15 @@ def client(db_connection):
 
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_cache] = lambda: cache
 
     try:
         with TestClient(app) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def cache():
+    return fakeredis.FakeRedis(decode_responses=True)

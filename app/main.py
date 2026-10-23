@@ -1,5 +1,6 @@
 import secrets
 import string
+import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -8,9 +9,12 @@ from pydantic import AnyHttpUrl, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from redis import Redis
+from redis.exceptions import RedisError
 
 from .database import get_db
 from .models import URL
+from .cache import get_cache
 
 ALPHABET = string.ascii_letters + string.digits
 
@@ -70,7 +74,41 @@ def create_url(
 def redirect(
     code: str,
     db: Session = Depends(get_db),
+    cache: Redis = Depends(get_cache),
 ):
+    cache_key = f"url:{code}"
+
+    # 1. Try Redis first
+    try:
+        cached = cache.get(cache_key)
+    except RedisError:
+        cached = None
+
+    if  cached is not None:
+        try:
+            data = json.loads(cached)
+
+            expires_at = (
+                datetime.fromisoformat(data["expires_at"])
+                if data["expires_at"] is not None
+                else None
+            )
+
+            if expires_at is not None and expires_at <= datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=410,
+                    detail="URL has expired",
+                )
+
+            return RedirectResponse(
+                url=data["original_url"],
+                status_code=302,
+            )
+        except (ValueError, TypeError, KeyError):
+            # Invalid cache entry: fall back to database
+            pass
+
+    # 2. Cache Miss: query PostgreSQL
     url = db.scalar(
         select(URL).where(URL.short_code == code)
     )
@@ -81,14 +119,38 @@ def redirect(
             detail="URL not found",
         )
 
-    if (
-        url.expires_at is not None
-        and url.expires_at <= datetime.now(timezone.utc)
-    ):
+    if url.expires_at is not None and url.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(
             status_code=410,
             detail="URL has expired",
         )
+
+    # 3. Calculate cache TTL
+    cache_ttl = 3600
+
+    if url.expires_at is not None:
+        remaining = (url.expires_at - datetime.now(timezone.utc)).total_seconds()
+        cache_ttl = min(cache_ttl, int(remaining))
+
+    # 4. Populate Redis
+    if cache_ttl > 0:
+        data = {
+            "original_url": url.original_url,
+            "expires_at": (
+                url.expires_at.isoformat()
+                if url.expires_at is not None
+                else None
+            ),
+        }
+
+        try:
+            cache.set(
+                cache_key,
+                json.dumps(data),
+                ex=cache_ttl,
+            )
+        except RedisError:
+            pass
 
     return RedirectResponse(
         url=url.original_url, 
