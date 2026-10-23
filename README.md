@@ -1,8 +1,8 @@
 # URL Shortener
 
-A URL shortening service built with FastAPI and PostgreSQL.
+A URL shortening service built with FastAPI, PostgreSQL, and Redis.
 
-This project explores backend engineering concepts including RESTful API design, database persistence, transaction management, automated testing, and scalability.
+This project explores RESTful API design, database persistence, caching strategies, fault tolerance, automated testing, and performance optimization.
 
 ## Features
 
@@ -19,13 +19,16 @@ This project explores backend engineering concepts including RESTful API design,
 - Database schema versioning with Alembic
 - Automated testing with GitHub Actions CI
 - URL expiration
+- Redis caching using the cache-aside pattern
+- Automatic fallback to PostgreSQL when Redis is unavailable
+- Cache TTL aligned with URL expiration
+- Redis cache tests using FakeRedis
+- Load testing and performance analysis using Grafana k6
 
 ### Planned
 
-- Redis caching
 - Rate limiting
 - Containerized API deployment
-- Load testing and performance analysis
 
 ## Tech Stack
 
@@ -35,30 +38,44 @@ This project explores backend engineering concepts including RESTful API design,
 - ORM: SQLAlchemy 2
 - Database Driver: Psycopg 3
 - Database Migrations: Alembic
+- Cache: Redis
+- Redis Client: redis-py
+- Cache Testing: fakeredis
+- Load Testing: Grafana k6
 - Testing: pytest, FastAPI TestClient
 - CI: GitHub Actions
 - Development Environment: Docker Compose
 
 ## Architecture
 
-Current architecture:
-
 ```text
-Client
-   |
-   v
-FastAPI
-   |
-   v
-SQLAlchemy
-   |
-   v
-PostgreSQL
+                         Client
+                           |
+                           v
+                        FastAPI
+                           |
+                           v
+                       Redis GET
+                      /         \
+                 Cache hit    Cache miss / failure
+                     |                 |
+                     |                 v
+                     |             SQLAlchemy
+                     |                 |
+                     |                 v
+                     |             PostgreSQL
+                     |                 |
+                     |         Optional cache fill
+                     |                 |
+                     +--------+--------+
+                              |
+                              v
+                      HTTP 302 Redirect
 ```
 
-FastAPI runs locally, while PostgreSQL runs in a Docker container.
+The application uses Redis as a cache layer for URL redirects. On a cache hit, the original URL is returned without querying PostgreSQL. On a cache miss or Redis failure, the application falls back to PostgreSQL.
 
-Database schema changes are managed through Alembic migrations.
+PostgreSQL remains the source of truth. Cached URLs use a maximum TTL of one hour, capped by the URL's remaining lifetime.
 
 ## Getting Started
 
@@ -89,13 +106,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Configure the database connection.
+4. Configure the database and Redis connection.
 
 ```bash
 cp .env.example .env
 ```
 
-5. Start PostgreSQL.
+The API connects to Redis at `redis://localhost:6379/0` by default. The connection can be overridden with the `REDIS_URL` environment variable.
+
+5. Start PostgreSQL and Redis.
 
 ```bash
 docker compose up -d
@@ -169,14 +188,22 @@ GET /{code}
 The `urls` table contains:
 
 | Column       | Type         | Constraints      |
+
 | ------------ | ------------ | ---------------- |
+
 | id           | BIGINT       | Primary Key      |
+
 | short_code   | VARCHAR(8)   | Unique, Not Null |
+
 | original_url | TEXT         | Not Null         |
+
 | created_at   | TIMESTAMPTZ  | Not Null         |
+
 | expires_at   | TIMESTAMPTZ  | Nullable         |
 
 A unique B-tree index on `short_code` supports efficient lookups and prevents duplicate short codes.
+
+An index on `expires_at` supports efficient expiration-based queries for future cleanup jobs.
 
 ### Database Migrations
 
@@ -186,8 +213,10 @@ Migration history:
 
 - Initial migration: Create the `urls` table.
 - URL expiration migration: Add the nullable `expires_at` column.
+- Expiration index migration: Add an index on `expires_at`.
 
 Existing URL records remain valid after the migration,
+
 with `expires_at` set to NULL.
 
 Apply all pending migrations:
@@ -254,12 +283,18 @@ Current tests cover:
 - HTTP 410 for expired URLs
 - Invalid expiration values (422)
 - Backward compatibility for URLs without expiration
+- Redis cache hits without additional database queries
+- PostgreSQL fallback when Redis is unavailable
+- Expiration validation for cached URLs
+- Cache TTL bounded by URL expiration
 
 ### Test Isolation
 
 Each test runs within an outer database transaction.
 
 SQLAlchemy sessions use savepoints so that application-level commits do not commit the outer test transaction.
+
+Redis cache tests use FakeRedis instances to isolate test state without depending on a running Redis server.
 
 After each test, the outer transaction is rolled back, preventing test data from affecting subsequent tests.
 
@@ -270,18 +305,38 @@ GitHub Actions automatically executes the test suite on pushes and pull requests
 The CI workflow:
 
 1. Starts a PostgreSQL service container.
+
 2. Sets up Python 3.11 and installs dependencies.
+
 3. Applies Alembic migrations to the test database.
+
 4. Runs the integration tests with pytest.
 
-This verifies that the application and database schema can be initialized and tested in a clean environment.
+This verifies that the application and database schema can be initialized and tested in a clean environment. Redis caching behavior is tested with FakeRedis; a real Redis server is not required for these tests.
 
 ## Performance Benchmarks
 
-Redirect performance is evaluated using Grafana k6.
+Redirect performance was evaluated using Grafana k6, comparing PostgreSQL-only lookups with Redis-backed redirects.
 
-See [Benchmark Results](benchmarks/README.md) for the
-test methodology, baseline measurements, and observations.
+Under a local, single-worker, single-hot-key workload at 50 concurrent virtual users:
+
+| Metric | PostgreSQL-only | Redis Cached |
+
+|---|---:|---:|
+
+| Throughput | 913.89 RPS | 2,009.37 RPS |
+
+| P95 Latency | 101.34ms | 43.35ms |
+
+| P99 Latency | 141.34ms | 69.30ms |
+
+| HTTP Error Rate | 0% | 0% |
+
+Redis caching achieved approximately **2.20x higher throughput** and **57.2% lower P95 latency** under these test conditions.
+
+Redis results represent the median of three runs, while the PostgreSQL-only baseline consists of a single run per concurrency level. These are local benchmark observations rather than production capacity estimates.
+
+See [Detailed Benchmark Results](benchmarks/README.md) for methodology, measurements, and limitations.
 
 ## Design Decisions
 
@@ -312,17 +367,29 @@ This improves test repeatability and reduces the risk of test data interfering w
 ### Why Store an Absolute Expiration Timestamp?
 
 The API accepts a relative TTL (`expires_in_seconds`),
+
 while PostgreSQL stores an absolute UTC timestamp (`expires_at`).
 
 This allows expiration to be checked directly at request time
+
 without recalculating the TTL from the creation timestamp.
 
 Expired URLs return HTTP 410 without being immediately
+
 deleted from the database.
+
+### Why Redis?
+
+URL shortening services typically have read-heavy workloads, where redirects occur more frequently than new URL creation.
+
+Redis reduces repeated PostgreSQL lookups by caching frequently accessed URL mappings in memory.
+
+The application uses the cache-aside pattern, keeping PostgreSQL as the source of truth. If Redis is unavailable, redirect requests fall back to PostgreSQL.
+
+Cache entries have a maximum TTL of one hour, limited by the remaining lifetime of the URL to prevent serving expired redirects.
 
 ## Current Limitations
 
-- No caching layer
 - No authentication or user management
 - No automatic cleanup of expired URLs
 - The returned `short_url` uses a hardcoded base URL (`http://localhost:8000`)
@@ -338,7 +405,7 @@ deleted from the database.
 - [x] GitHub Actions CI
 - [x] Alembic database migrations
 - [x] URL expiration
-- [ ] Redis caching
+- [x] Redis caching
+- [x] Load testing
 - [ ] Rate limiting
-- [ ] Load testing
 - [ ] Production deployment
