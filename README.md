@@ -24,10 +24,13 @@ This project explores RESTful API design, database persistence, caching strategi
 - Cache TTL aligned with URL expiration
 - Redis cache tests using FakeRedis
 - Load testing and performance analysis using Grafana k6
+- Redis-based rate limiting for URL creation
+- Per-IP request limits using a fixed-window counter
+- HTTP 429 responses with Retry-After headers
+- Fail-open behavior when Redis is unavailable
 
 ### Planned
 
-- Rate limiting
 - Containerized API deployment
 
 ## Tech Stack
@@ -172,6 +175,17 @@ Example response (201 Created):
 The `expires_at` field is an absolute expiration timestamp in UTC, or null for URLs without expiration.
 
 If a unique short code cannot be generated within 5 attempts, the API returns HTTP 503 Service Unavailable with `{"detail": "Could not generate unique short code"}`.
+
+### Rate Limiting
+
+The URL creation endpoint (`POST /api/v1/urls`) is rate-limited using Redis.
+
+- **Limit**: 10 requests per IP address per 60-second fixed window
+- **Exceeded Limit**: Returns HTTP 429 Too Many Requests
+- **Retry-After**: Indicates the number of seconds until the next window
+- **Failure Handling**: Allows requests when Redis is unavailable (fail-open)
+
+The redirect endpoint (`GET /{code}`) is not rate-limited.
 
 ### Redirect to Original URL
 
@@ -388,6 +402,24 @@ The application uses the cache-aside pattern, keeping PostgreSQL as the source o
 
 Cache entries have a maximum TTL of one hour, limited by the remaining lifetime of the URL to prevent serving expired redirects.
 
+### Why Redis-Based Rate Limiting?
+
+Redis provides shared, in-memory counters suitable for enforcing request limits across multiple application instances.
+
+The initial implementation uses a fixed-window counter because it is simple, efficient, and requires minimal storage.
+
+Redis transactions ensure that counter increments and TTL initialization execute atomically.
+
+The rate limiter follows a fail-open policy to preserve API availability when Redis is unavailable.
+
+**Trade-offs**:
+
+- Fixed windows can allow bursts around window boundaries.
+- Fail-open behavior temporarily disables rate limiting during Redis outages.
+- Client IP identification requires trusted proxy configuration in production environments.
+
+Sliding-window or token-bucket algorithms may be considered in future iterations.
+
 ## Current Limitations
 
 - No authentication or user management
@@ -407,5 +439,5 @@ Cache entries have a maximum TTL of one hour, limited by the remaining lifetime 
 - [x] URL expiration
 - [x] Redis caching
 - [x] Load testing
-- [ ] Rate limiting
+- [x] Rate limiting
 - [ ] Production deployment

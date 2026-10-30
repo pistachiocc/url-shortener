@@ -15,6 +15,7 @@ from redis.exceptions import RedisError
 from .database import get_db
 from .models import URL
 from .cache import get_cache
+from .rate_limit import enforce_create_rate_limit
 
 ALPHABET = string.ascii_letters + string.digits
 
@@ -29,7 +30,11 @@ class URLRequest(BaseModel):
     )
 
 
-@app.post("/api/v1/urls", status_code=201)
+@app.post(
+    "/api/v1/urls",
+    status_code=201,
+    dependencies=[Depends(enforce_create_rate_limit)],
+)
 def create_url(
     request: URLRequest,
     db: Session = Depends(get_db),
