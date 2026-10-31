@@ -75,6 +75,11 @@ def create_url(
     )
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 @app.get("/{code}")
 def redirect(
     code: str,
