@@ -33,9 +33,6 @@ This project explores RESTful API design, database persistence, caching strategi
 - Health checks for FastAPI, PostgreSQL, and Redis
 - Database migrations executed within the API container
 
-### Planned
-
-
 ## Tech Stack
 
 - Language: Python 3.11
@@ -210,7 +207,7 @@ via `localhost:5433` and Redis via `localhost:6379`.
 ### Health Check
 
 ```bash
-GET \health
+GET /health
 ```
 
 Returns HTTP 200 when the FastAPI application is responding.
@@ -388,6 +385,45 @@ Current tests cover:
 - Expiration validation for cached URLs
 - Cache TTL bounded by URL expiration
 - Health endpoint availability (HTTP 200)
+
+### Docker Smoke Test
+
+A smoke test script verifies the end-to-end behavior of the running Docker Compose environment.
+
+The script checks:
+
+- API health endpoint availability
+- Short URL creation
+- HTTP 302 redirection
+- Redis cache population
+
+Start the services:
+
+```bash
+docker compose up --build -d
+```
+
+Run the smoke test:
+
+```bash
+./scripts/smoke_test.sh
+```
+
+Expected output:
+
+```text
+Checking API health...
+{"status":"ok"}
+Creating a short URL...
+Created short code: Ab12Cd34
+Checking redirect...
+Checking Redis cache...
+Smoke test passed!
+```
+
+Unlike the pytest suite, this test sends real HTTP requests to the running application and verifies Redis cache population using the Redis container.
+
+The smoke test creates a URL in teh development database and is intended for local development environments.
 
 ### Test Isolation
 
