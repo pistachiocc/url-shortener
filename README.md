@@ -28,10 +28,13 @@ This project explores RESTful API design, database persistence, caching strategi
 - Per-IP request limits using a fixed-window counter
 - HTTP 429 responses with Retry-After headers
 - Fail-open behavior when Redis is unavailable
+- Containerized FastAPI application using Docker
+- Multi-service orchestration with Docker Compose
+- Health checks for FastAPI, PostgreSQL, and Redis
+- Database migrations executed within the API container
 
 ### Planned
 
-- Containerized API deployment
 
 ## Tech Stack
 
@@ -47,7 +50,8 @@ This project explores RESTful API design, database persistence, caching strategi
 - Load Testing: Grafana k6
 - Testing: pytest, FastAPI TestClient
 - CI: GitHub Actions
-- Development Environment: Docker Compose
+- Containerization: Docker, Docker Compose
+- Application Server: Uvicorn
 
 ## Architecture
 
@@ -76,6 +80,18 @@ This project explores RESTful API design, database persistence, caching strategi
                       HTTP 302 Redirect
 ```
 
+The application is containerized using Docker Compose, with three services running on a shared Docker network:
+
+- **api**: FastAPI application served by Uvicorn
+- **db**: PostgreSQL for persistent URL storage
+- **cache**: Redis for URL caching and rate limiting
+
+Services communicate through Docker Compose service names. The API connects to PostgreSQL at `db:5432` and Redis at `cache:6379`.
+
+Docker health checks monitor all three services. The API starts after PostgreSQL and Redis pass their health checks.
+
+Database schema migrations are managed using Alembic and executed explicitly from the API container.
+
 The application uses Redis as a cache layer for URL redirects. On a cache hit, the original URL is returned without querying PostgreSQL. On a cache miss or Redis failure, the application falls back to PostgreSQL.
 
 PostgreSQL remains the source of truth. Cached URLs use a maximum TTL of one hour, capped by the URL's remaining lifetime.
@@ -84,10 +100,9 @@ PostgreSQL remains the source of truth. Cached URLs use a maximum TTL of one hou
 
 ### Prerequisites
 
-- Python 3.11
 - Docker with Docker Compose
 
-### Installation
+### Running with Docker Compose
 
 1. Clone the repository.
 
@@ -96,50 +111,120 @@ git clone https://github.com/pistachiocc/url-shortener.git
 cd url-shortener
 ```
 
-2. Create and activate a virtual environment.
+2. Build the API image.
+
+```bash
+docker compose build api
+```
+
+3. Start PostgreSQL and Redis.
+
+```bash
+docker compose up -d db cache
+```
+
+4. Apply database migrations.
+
+```bash
+docker compose run --rm api alembic upgrade head
+```
+
+5. Start the FastAPI service.
+
+```bash
+docker compose up -d api
+```
+
+6. Verify service health.
+
+```bash
+docker compose ps
+curl http://localhost:8000/health
+```
+
+All three services should report healthy status.
+
+The API is available at http://localhost:8000.
+
+Interactive API documentation is available at
+http://localhost:8000/docs.
+
+### Subsequent Starts
+
+After the initial setup, start the services with:
+
+```bash
+docker compose up --build -d
+```
+
+Database migrations are not executed automatically.
+Run `docker compose run --rm api alembic upgrade head`
+whenever schema migrations need to be applied.
+
+### Stopping the Application
+
+```bash
+docker compose down
+```
+
+The PostgreSQL data volume is preserved.
+
+### Local Development (Optional)
+
+The API can also run directly on the host machine
+while PostgreSQL and Redis run in Docker.
+
+Create and activate a Python virtual environment:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements-dev.txt
 ```
 
-3. Install dependencies.
-
-```bash
-pip install -r requirements.txt
-```
-
-4. Configure the database and Redis connection.
+Copy the local environment configuration:
 
 ```bash
 cp .env.example .env
 ```
 
-The API connects to Redis at `redis://localhost:6379/0` by default. The connection can be overridden with the `REDIS_URL` environment variable.
-
-5. Start PostgreSQL and Redis.
+Start the dependencies without the API container:
 
 ```bash
-docker compose up -d
+docker compose stop api
+docker compose up -d db cache
 ```
 
-6. Apply database migrations.
+Apply migrations and start the API:
 
 ```bash
 alembic upgrade head
-```
-
-7. Start the API server.
-
-```bash
 fastapi dev app/main.py
 ```
 
-The API is available at http://localhost:8000.
-
-Interactive API documentation: http://localhost:8000/docs
+When running locally, the API connects to PostgreSQL
+via `localhost:5433` and Redis via `localhost:6379`.
 
 ## API Endpoints
+
+### Health Check
+
+```bash
+GET \health
+```
+
+Returns HTTP 200 when the FastAPI application is responding.
+
+Example response:
+
+```json
+{
+    "status": "ok"
+}
+```
+
+This endpoint serves as a liveness check. It does not verify the availability of PostgreSQL or Redis.
+
 
 ### Create Short URL
 
@@ -202,17 +287,11 @@ GET /{code}
 The `urls` table contains:
 
 | Column       | Type         | Constraints      |
-
 | ------------ | ------------ | ---------------- |
-
 | id           | BIGINT       | Primary Key      |
-
 | short_code   | VARCHAR(8)   | Unique, Not Null |
-
 | original_url | TEXT         | Not Null         |
-
 | created_at   | TIMESTAMPTZ  | Not Null         |
-
 | expires_at   | TIMESTAMPTZ  | Nullable         |
 
 A unique B-tree index on `short_code` supports efficient lookups and prevents duplicate short codes.
@@ -233,7 +312,14 @@ Existing URL records remain valid after the migration,
 
 with `expires_at` set to NULL.
 
-Apply all pending migrations:
+Apply all pending migrations using Docker Compose:
+
+```bash
+docker compose run --rm api alembic upgrade head
+```
+
+For local development, migrations can also be applied
+using the DATABASE_URL configured in `.env`:
 
 ```bash
 alembic upgrade head
@@ -260,7 +346,7 @@ Integration tests run against a separate PostgreSQL database to avoid modifying 
 1. Start PostgreSQL.
 
 ```bash
-docker compose up -d
+docker compose up -d db
 ```
 
 2. Create the test database (first time only).
@@ -301,6 +387,7 @@ Current tests cover:
 - PostgreSQL fallback when Redis is unavailable
 - Expiration validation for cached URLs
 - Cache TTL bounded by URL expiration
+- Health endpoint availability (HTTP 200)
 
 ### Test Isolation
 
@@ -337,13 +424,9 @@ Under a local, single-worker, single-hot-key workload at 50 concurrent virtual u
 | Metric | PostgreSQL-only | Redis Cached |
 
 |---|---:|---:|
-
 | Throughput | 913.89 RPS | 2,009.37 RPS |
-
 | P95 Latency | 101.34ms | 43.35ms |
-
 | P99 Latency | 141.34ms | 69.30ms |
-
 | HTTP Error Rate | 0% | 0% |
 
 Redis caching achieved approximately **2.20x higher throughput** and **57.2% lower P95 latency** under these test conditions.
@@ -420,6 +503,16 @@ The rate limiter follows a fail-open policy to preserve API availability when Re
 
 Sliding-window or token-bucket algorithms may be considered in future iterations.
 
+### Why Docker Compose?
+
+Docker Compose provides a reproducible local environment for the API, PostgreSQL, and Redis.
+
+Each service runs in an isolated container and communicates through an internal Docker network, avoiding dependencies on host-specific service configurations.
+
+Health checks help coordinate service startup, while explicit Alembic migration commands keep database schema changes separate from application startup.
+
+This setup simplifies local development and integration testing, but it is not intended to represent a production deployment architecture.
+
 ## Current Limitations
 
 - No authentication or user management
@@ -440,4 +533,7 @@ Sliding-window or token-bucket algorithms may be considered in future iterations
 - [x] Redis caching
 - [x] Load testing
 - [x] Rate limiting
+- [x] Dockerized FastAPI application
+- [x] Docker Compose service orchestration
+- [x] Health checks for API, PostgreSQL, and Redis
 - [ ] Production deployment
