@@ -59,9 +59,17 @@ def create_url(
 
         try:
             db.commit()
-        except IntegrityError:
+        except IntegrityError as exc:
             db.rollback()
-            continue
+
+            if (
+                getattr(exc.orig, "sqlstate", None) == "23505"
+                and getattr(exc.orig.diag, "constraint_name", None)
+                == "urls_short_code_key"
+            ):
+                continue
+
+            raise
 
         return {
             "code": code,
