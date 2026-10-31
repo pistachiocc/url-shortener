@@ -101,3 +101,56 @@ def test_cache_ttl_respects_expiration(client, cache):
     ttl = cache.ttl(f"url:{code}")
 
     assert 0 < ttl <= 60
+
+
+def test_redirect_invalid_cached_url_falls_back_to_db(
+    client, cache
+):
+    code = create_short_url(client)
+    cache_key = f"url:{code}"
+
+    # Insert a malformed cache entry
+    cache.set(
+        cache_key,
+        json.dumps({
+            "original_url": 123,
+            "expires_at": None,
+        }),
+        ex=3600,
+    )
+
+    response = client.get(
+        f"/{code}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == (
+        "https://example.com/articles/123"
+    )
+
+
+def test_redirect_invalid_cached_expiration_falls_back_to_db(
+    client, cache
+):
+    code = create_short_url(client)
+    cache_key = f"url:{code}"
+
+    cache.set(
+        cache_key,
+        json.dumps({
+            "original_url": "https://example.org/incorrect",
+            "expires_at": "not-a-timestamp",
+        }),
+        ex=3600,
+    )
+
+    response = client.get(
+        f"/{code}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == (
+        "https://example.com/articles/123"
+    )
