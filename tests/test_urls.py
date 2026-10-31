@@ -106,7 +106,7 @@ def test_create_retires_on_short_code_collision(
         return next(generated_chars)
 
     monkeypatch.setattr(
-        "app.main.secrets.choice",
+        "app.services.url_service.secrets.choice",
         fake_choice,
     )
 
@@ -180,7 +180,7 @@ def test_create_returns_503_after_five_collisions(
 
     # Every attempt generates the same short code
     monkeypatch.setattr(
-        "app.main.secrets.choice",
+        "app.services.url_service.secrets.choice",
         fake_choice,
     )
 
