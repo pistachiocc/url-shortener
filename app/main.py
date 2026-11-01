@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import AnyHttpUrl, BaseModel, Field
 from sqlalchemy.orm import Session
 from redis import Redis
+from uuid import uuid4
 
 from .services.url_service import ShortCodeGenerationError, create_short_url
 from .services.redirect_service import URLExpiredError, URLNotFoundError, get_original_url
@@ -14,6 +15,7 @@ from .database import get_db
 from .cache import get_cache
 from .rate_limit import enforce_create_rate_limit
 from .logging_config import configure_logging
+from .request_context import current_request_id
 
 ALPHABET = string.ascii_letters + string.digits
 
@@ -26,39 +28,48 @@ request_logger = logging.getLogger("app.http")
 
 @app.middleware("http")
 async def log_http_requests(request: Request, call_next):
+    request_id = str(uuid4())
+    token = current_request_id.set(request_id)
+
     start_time = time.perf_counter()
 
     try:
-        response = await call_next(request)
-    except Exception:
+        try:
+            response = await call_next(request)
+        except Exception:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+
+            request_logger.exception(
+                "HTTP request failed",
+                extra={
+                    "event": "http_request_error",
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": 500,
+                    "duration_ms": round(duration_ms, 2),
+                },
+            )
+            raise
+
         duration_ms = (time.perf_counter() - start_time) * 1000
 
-        request_logger.exception(
-            "HTTP request failed",
+        response.headers["X-Request-ID"] = request_id
+
+        request_logger.info(
+            "HTTP request completed",
             extra={
-                "event": "http_request_error",
+                "event": "http_request",
                 "method": request.method,
                 "path": request.url.path,
-                "status_code": 500,
+                "status_code": response.status_code,
                 "duration_ms": round(duration_ms, 2),
             },
         )
-        raise
 
-    duration_ms = (time.perf_counter() - start_time) * 1000
+        return response
 
-    request_logger.info(
-        "HTTP request completed",
-        extra={
-            "event": "http_request",
-            "method": request.method,
-            "path": request.url.path,
-            "status_code": response.status_code,
-            "duration_ms": round(duration_ms, 2),
-        },
-    )
-
-    return response
+    finally:
+        current_request_id.reset(token)
 
 
 

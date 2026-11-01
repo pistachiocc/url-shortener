@@ -1,8 +1,10 @@
 import json
 import logging
 import sys
+
 from datetime import datetime, timezone
 
+from .request_context import current_request_id
 
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -15,6 +17,12 @@ class JSONFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+
+        # Automatically attach the current request ID
+        request_id = current_request_id.get()
+
+        if request_id is not None:
+            log_data["request_id"] = request_id
 
         # Optional structured fields
         for field in (
