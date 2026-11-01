@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime, timezone
 
 from redis import Redis
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import URL
 
+logger = logging.getLogger(__name__)
 
 MAX_CACHE_TTL = 3600
 
@@ -32,8 +34,23 @@ def get_original_url(
         cached = cache.get(cache_key)
     except RedisError:
         cached = None
-
-    if  cached is not None:
+        logger.warning(
+            "Redis unavailable; falling back to PostgreSQL",
+            extra={
+                "event": "redis_cache_unavailable",
+                "cache_result": "error",
+            },
+        )
+    else:
+        if  cached is None:
+            logger.info(
+                "Redis cache miss",
+                extra={
+                    "event": "redis_cache_miss",
+                    "cache_result": "miss",
+                },
+            )
+    if cached is not None:
         try:
             data = json.loads(cached)
 
@@ -54,11 +71,24 @@ def get_original_url(
             if expires_at is not None and expires_at <= datetime.now(timezone.utc):
                 raise URLExpiredError("URL has expired")
 
+            logger.info(
+                "Redis cache hit",
+                extra={
+                    "event": "redis_cache_hit",
+                    "cache_result": "hit",
+                },
+            )
+
             return original_url
         
         except (ValueError, TypeError, KeyError):
-            # Invalid cache entry: fall back to database
-            pass
+            logger.warning(
+                "Invalid Redis cache entry; falling back to PostgreSQL",
+                extra={
+                    "event": "redis_cache_invalid",
+                    "cache_result": "invalid",
+                },
+            )
 
     # 2. Query PostgreSQL on cache miss or Redis failure
     url = db.scalar(
