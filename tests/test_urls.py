@@ -8,6 +8,7 @@ from psycopg.errors import NotNullViolation
 
 from sqlalchemy.orm import Session
 from app.models import URL
+from app.services.url_service import create_short_url
 
 
 def test_create_short_url(client):
@@ -121,7 +122,7 @@ def test_create_retires_on_short_code_collision(
 
 
 def test_create_does_not_retry_other_integrity_errors(
-    client, monkeypatch
+    db_connection, monkeypatch
 ):
     calls = 0
 
@@ -143,11 +144,16 @@ def test_create_does_not_retry_other_integrity_errors(
         failing_commit,
     )
 
-    with pytest.raises(IntegrityError):
-        client.post(
-            "/api/v1/urls",
-            json={"long_url": "https://example.com"},
-        )
+    with Session(
+        bind=db_connection,
+        join_transaction_mode="create_savepoint",
+    ) as session:
+        with pytest.raises(IntegrityError):
+            create_short_url(
+                db=session,
+                original_url="https://example.com",
+                expires_in_seconds=None
+            )
 
     assert calls == 1
 

@@ -344,3 +344,54 @@ def test_concurrent_request_ids_are_isolated():
     }
 
     assert logged_ids == set(request_ids)
+
+
+def test_unhandled_exception_returns_request_id(
+    client, monkeypatch
+):
+    def falling_lookup(*args, **kwargs):
+        raise RuntimeError("Simulated backend failure")
+
+    # Simulate an unexpected failure in the service
+    monkeypatch.setattr(
+        "app.main.get_original_url",
+        falling_lookup,
+    )
+
+    # Capture formatted JSON logs
+    output = StringIO()
+    handler = logging.StreamHandler(output)
+    handler.setFormatter(JSONFormatter())
+
+    app_logger = logging.getLogger("app")
+    app_logger.addHandler(handler)
+
+    try:
+        response = client.get("/testfail")
+    finally:
+        app_logger.removeHandler(handler)
+        handler.close()
+
+    assert response.status_code == 500
+    assert response.text == "Internal Server Error"
+
+    request_id = response.headers["X-Request-ID"]
+    assert UUID(request_id).version == 4
+
+    logs = [
+        json.loads(line)
+        for line in output.getvalue().splitlines()
+    ]
+
+    error_logs = [
+        log
+        for log in logs
+        if log.get("event") == "http_request_error"
+    ]
+
+    assert len(error_logs) == 1
+    assert error_logs[0]["request_id"] == request_id
+    assert error_logs[0]["status_code"] == 500
+
+    # Internal error details must not leak to clients
+    assert "Simulated backend failure" not in response.text
