@@ -3,7 +3,7 @@ import logging
 import time
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse
 from pydantic import AnyHttpUrl, BaseModel, Field
 from sqlalchemy.orm import Session
 from redis import Redis
@@ -49,7 +49,12 @@ async def log_http_requests(request: Request, call_next):
                     "duration_ms": round(duration_ms, 2),
                 },
             )
-            raise
+            response = PlainTextResponse(
+                "Internal Server Error",
+                status_code=500,
+            )
+            response.headers["X-Request-ID"] = request_id
+            return response
 
         duration_ms = (time.perf_counter() - start_time) * 1000
 
@@ -70,8 +75,6 @@ async def log_http_requests(request: Request, call_next):
 
     finally:
         current_request_id.reset(token)
-
-
 
 
 class URLRequest(BaseModel):
