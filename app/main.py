@@ -2,6 +2,7 @@ import string
 import logging
 import time
 import re
+import os
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse, PlainTextResponse
@@ -20,7 +21,13 @@ from .request_context import current_request_id
 
 ALPHABET = string.ascii_letters + string.digits
 
+
 configure_logging()
+
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL",
+    "http://localhost:8000",
+).rstrip("/")
 
 app = FastAPI(title="URL Shortener")
 
@@ -110,7 +117,7 @@ def create_url(
 
     return {
         "code": result.code,
-        "short_url": f"http://localhost:8000/{result.code}",
+        "short_url": f"{PUBLIC_BASE_URL}/{result.code}",
         "expires_at": result.expires_at,
     }
 

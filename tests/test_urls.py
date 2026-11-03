@@ -317,3 +317,26 @@ def test_invalid_short_code_skips_storage(
     assert response.json() == {
         "detail": "URL not found"
     }
+
+
+def test_create_uses_configured_public_base_url(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.main.PUBLIC_BASE_URL",
+        "https://short.example.com",
+        raising=False,
+    )
+
+    response = client.post(
+        "/api/v1/urls",
+        json={"long_url": "https://example.com"},
+    )
+
+    assert response.status_code == 201
+
+    data = response.json()
+
+    assert data["short_url"] == (
+        f"https://short.example.com/{data['code']}"
+    )
