@@ -32,6 +32,12 @@ This project explores RESTful API design, database persistence, caching strategi
 - Multi-service orchestration with Docker Compose
 - Health checks for FastAPI, PostgreSQL, and Redis
 - Database migrations executed within the API container
+- Service-layer separation for URL creation and redirects
+- Structured JSON logging
+- Request ID propagation and log correlation
+- Consistent request IDs in unhandled HTTP 500 responses
+- Early validation of 8-character Base62 short codes
+- Configurable public base URL
 
 ## Tech Stack
 
@@ -52,29 +58,32 @@ This project explores RESTful API design, database persistence, caching strategi
 
 ## Architecture
 
-```text
-                         Client
-                           |
-                           v
-                        FastAPI
-                           |
-                           v
-                       Redis GET
-                      /         \
-                 Cache hit    Cache miss / failure
-                     |                 |
-                     |                 v
-                     |             SQLAlchemy
-                     |                 |
-                     |                 v
-                     |             PostgreSQL
-                     |                 |
-                     |         Optional cache fill
-                     |                 |
-                     +--------+--------+
-                              |
-                              v
-                      HTTP 302 Redirect
+```mermaid
+flowchart TD
+    Client["Client"] --> Middleware["HTTP Middleware<br/>Request ID / Logging / Error Handling"]
+    Middleware --> API["FastAPI API Layer<br/>main.py"]
+
+    API -->|"POST /api/v1/urls"| RateLimit["Rate Limiter"]
+    RateLimit --> RedisLimit[("Redis<br/>Rate Limit Counter")]
+    RateLimit -->|"Allowed"| Create["URL Creation Service<br/>Base62 / Collision Retry"]
+    Create -->|"INSERT"| DB[("PostgreSQL")]
+    Create --> Created["201 Created<br/>Short URL"]
+
+    API -->|"GET /{code}"| Validate{"Valid 8-character<br/>Base62 code?"}
+
+    Validate -->|"No"| NotFound["404 Not Found"]
+    Validate -->|"Yes"| Redirect["Redirect Service"]
+
+    Redirect --> RedisCache[("Redis<br/>URL Cache")]
+    RedisCache --> CacheHit{"Cache Hit?"}
+
+    CacheHit -->|"Yes, valid"| Success["302 Redirect"]
+    CacheHit -->|"Miss / Redis Error / Invalid Entry"| DB
+
+    DB -->|"Found, not expired"| Success
+    DB -->|"Not Found"| NotFound
+    DB -->|"Expired"| Gone["410 Gone"]
+    DB -.->|"Cache Fill"| RedisCache
 ```
 
 The application is containerized using Docker Compose, with three services running on a shared Docker network:
@@ -92,6 +101,26 @@ Database schema migrations are managed using Alembic and executed explicitly fro
 The application uses Redis as a cache layer for URL redirects. On a cache hit, the original URL is returned without querying PostgreSQL. On a cache miss or Redis failure, the application falls back to PostgreSQL.
 
 PostgreSQL remains the source of truth. Cached URLs use a maximum TTL of one hour, capped by the URL's remaining lifetime.
+
+## Configuration
+
+The application uses environment variables for configuration.
+
+| Variable | Description | Default |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL connection URL | Required |
+| `REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` |
+| `PUBLIC_BASE_URL` | Public base URL for generated short links | `http://localhost:8000` |
+
+For example:
+
+```env
+PUBLIC_BASE_URL=https://short.example.com
+```
+
+Trailing slashes are removed automatically.
+
+The public base URL is configured by the server rather than derived from client-supplied Host headers.
 
 ## Getting Started
 
@@ -276,8 +305,10 @@ GET /{code}
 ```
 
 - 302 Found: Redirects to the original URL.
-- 404 Not Found: The short code does not exist.
+- 404 Not Found: The short code is invalid or does not exist.
 - 410 Gone: URL has expired.
+
+Malformed short codes return HTTP 404 without querying Redis or PostgreSQL.
 
 ## Database Design
 
@@ -423,7 +454,7 @@ Smoke test passed!
 
 Unlike the pytest suite, this test sends real HTTP requests to the running application and verifies Redis cache population using the Redis container.
 
-The smoke test creates a URL in teh development database and is intended for local development environments.
+The smoke test creates a URL in the development database and is intended for local development environments.
 
 ### Test Isolation
 
@@ -470,6 +501,50 @@ Redis caching achieved approximately **2.20x higher throughput** and **57.2% low
 Redis results represent the median of three runs, while the PostgreSQL-only baseline consists of a single run per concurrency level. These are local benchmark observations rather than production capacity estimates.
 
 See [Detailed Benchmark Results](benchmarks/README.md) for methodology, measurements, and limitations.
+
+## Observability
+
+### Structured Logging
+
+The application emits structured JSON logs for HTTP requests
+and Redis cache operations.
+
+HTTP logs include:
+
+- Request method and path
+- HTTP status code
+- Request duration
+- Request ID
+
+Redis cache logs distinguish cache hits, misses, unavailable
+Redis connections, and invalid cache entries.
+
+### Request ID
+
+A unique UUID v4 is generated for every incoming HTTP request.
+
+The request ID is:
+
+- Stored in a Python ContextVar
+- Included in the X-Request-ID response header
+- Automatically attached to application JSON logs
+
+This enables correlation between client requests and
+server-side events without passing request IDs explicitly
+through service functions.
+
+Client-provided request IDs are not reused.
+
+### Unhandled Errors
+
+Unhandled exceptions are logged with their stack traces
+and converted into generic HTTP 500 responses.
+
+The response includes X-Request-ID but does not expose
+internal exception details.
+
+Errors occurring after a response has already started
+are outside the scope of this handling.
 
 ## Design Decisions
 
@@ -553,7 +628,6 @@ This setup simplifies local development and integration testing, but it is not i
 
 - No authentication or user management
 - No automatic cleanup of expired URLs
-- The returned `short_url` uses a hardcoded base URL (`http://localhost:8000`)
 - No distributed deployment
 - No production deployment configuration
 
