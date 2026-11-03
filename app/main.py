@@ -1,6 +1,7 @@
 import string
 import logging
 import time
+import re
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse, PlainTextResponse
@@ -125,6 +126,13 @@ def redirect(
     db: Session = Depends(get_db),
     cache: Redis = Depends(get_cache),
 ):
+    # Validate short code before accessing storage
+    if not re.fullmatch(r"[A-Za-z0-9]{8}", code):
+        raise HTTPException(
+            status_code=404,
+            detail="URL not found",
+        )
+
     try:
         original_url = get_original_url(
             code=code,

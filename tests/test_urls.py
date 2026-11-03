@@ -280,3 +280,40 @@ def test_health(client):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "abc",
+        "abcdefghijk",
+        "invalid-code",
+        "abc_1234",
+    ],
+)
+def test_invalid_short_code_skips_storage(
+    client, cache, monkeypatch, code
+):
+    def fail_storage_access(*arg, **kwargs):
+        raise AssertionError(
+            "Invalid short code should not access storage"
+        )
+
+    monkeypatch.setattr(
+        cache,
+        "get",
+        fail_storage_access,
+    )
+
+    monkeypatch.setattr(
+        Session,
+        "scalar",
+        fail_storage_access,
+    )
+
+    response = client.get(f"/{code}")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "URL not found"
+    }
