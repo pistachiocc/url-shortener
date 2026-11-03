@@ -8,6 +8,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://shortener:dev_password@db:5432/shortener
       REDIS_URL: redis://cache:6379/0
+      PUBLIC_BASE_URL: http://localhost:8000
     depends_on:
       db:
         condition: service_healthy
